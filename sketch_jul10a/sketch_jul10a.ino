@@ -3,8 +3,6 @@
 #include <WiFiClient.h>
 
 // --- Configurações da Câmera e Pinos ---
-// ATENÇÃO: Verifique se o modelo da sua câmera está correto.
-//          AI-THINKER é o mais comum.
 #define CAMERA_MODEL_AI_THINKER
 #include "camera_pins.h"
 
@@ -13,71 +11,68 @@ const char* ssid = "Perdidao";
 const char* password = "nemtefalo";
 
 // --- Configurações do Servidor de Backend ---
-// Coloque o IP do seu computador onde o servidor Python está rodando
 const char* server_ip = "192.168.2.108"; 
 const int server_port = 8081;
 
 // --- Pinos de Hardware ---
-#define LED_BUILTIN 4 // Em algumas placas pode ser outro pino
-#define relay 4       // Pino para o relé
-#define buzzer 2      // Pino para o buzzer
+#define LED_BUILTIN 4
+#define relay 4
+#define buzzer 2
 
 // --- Variáveis Globais de Controle ---
 boolean matchFace = false;
 boolean activeRelay = false;
 long prevMillis = 0;
 int interval = 5000; // 5 segundos para o relé ficar ativo
+boolean isRecognizing = false;
 
 //====================================================================
 // FUNÇÃO PARA RECONHECIMENTO FACIAL (Comunicação com o Backend)
 //====================================================================
 void recognizeFace() {
-  Serial.println("Capturando imagem para reconhecimento...");
+  isRecognizing = true;
+
+  Serial.println("===================================");
+  Serial.println("Iniciando novo ciclo de reconhecimento...");
+
   camera_fb_t * fb = NULL;
   
-  // Captura um frame da câmera
   fb = esp_camera_fb_get(); 
   if (!fb) {
     Serial.println("Falha ao capturar imagem da câmera");
+    isRecognizing = false; // <-- Libera a flag em caso de erro
     return;
   }
 
   Serial.printf("Tamanho da imagem: %u bytes\n", fb->len);
 
   WiFiClient client;
-  // Conecta ao servidor de socket Python
   if (!client.connect(server_ip, server_port)) {
     Serial.println("Falha ao conectar ao servidor");
-    esp_camera_fb_return(fb); // Libera o buffer da imagem
+    esp_camera_fb_return(fb);
+    isRecognizing = false; // <-- Libera a flag em caso de erro
     return;
   }
 
   Serial.println("Conectado ao servidor. Enviando imagem...");
-  
-  // Envia os bytes da imagem para o servidor
   client.write(fb->buf, fb->len);
-  // É importante chamar stop() para fechar a conexão e sinalizar ao servidor que o envio terminou.
-  client.stop(); 
-
   Serial.println("Imagem enviada. Aguardando resposta...");
-  
-  // Libera o buffer da imagem o mais rápido possível
   esp_camera_fb_return(fb);
 
-  // Aguarda a resposta do servidor por um tempo
   unsigned long timeout = millis();
-  while (!client.available() && millis() - timeout < 5000) {
+  // Use o timeout aumentado que testamos antes (ex: 20 segundos)
+  while (!client.available() && millis() - timeout < 5000) { 
     delay(100);
   }
   
   if (client.available()) {
-    String response = client.readStringUntil('\r');
+    String response = client.readString();
     Serial.print("Resposta do servidor: ");
     Serial.println(response);
     
-    if (response.indexOf("MATCH") != -1) {
+    if (response == "1") {
       Serial.println("ACESSO PERMITIDO!");
-      matchFace = true; // Ativa a variável global para acionar o relé
+      matchFace = true;
     } else {
       Serial.println("ACESSO NEGADO!");
       matchFace = false;
@@ -87,7 +82,11 @@ void recognizeFace() {
   }
 
   client.stop();
+  Serial.println("Ciclo de reconhecimento finalizado.");
+  
+  isRecognizing = false; 
 }
+
 
 
 //====================================================================
@@ -98,7 +97,6 @@ void setup() {
   Serial.setDebugOutput(true);
   Serial.println();
 
-  // Configuração dos Pinos
   pinMode(relay, OUTPUT); 
   pinMode(buzzer, OUTPUT); 
   pinMode(LED_BUILTIN, OUTPUT);
@@ -106,7 +104,6 @@ void setup() {
   digitalWrite(relay, LOW);
   digitalWrite(buzzer, LOW);
 
-  // Configuração da Câmera
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -139,7 +136,6 @@ void setup() {
     config.fb_count = 1;
   }
 
-  // Inicialização da Câmera
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x", err);
@@ -147,9 +143,8 @@ void setup() {
   }
 
   sensor_t * s = esp_camera_sensor_get();
-  s->set_framesize(s, FRAMESIZE_QVGA); // Usa uma resolução menor para envios mais rápidos
+  s->set_framesize(s, FRAMESIZE_QVGA);
 
-  // Conexão Wi-Fi
   WiFi.begin(ssid, password);
   Serial.print("Conectando ao WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
@@ -166,20 +161,12 @@ void setup() {
 // LOOP - Executa continuamente
 //====================================================================
 void loop() {
-  // --- Lógica de Gatilho para Reconhecimento ---
-  // Para este exemplo, vamos tentar reconhecer um rosto a cada 10 segundos,
-  // mas apenas se o relé não estiver já ativo.
-  static unsigned long lastRecognitionTime = 0;
   unsigned long currentTime = millis();
 
-  if (!activeRelay && (currentTime - lastRecognitionTime > 10000)) {
-    recognizeFace(); // Chama a função para capturar e enviar a foto
-    lastRecognitionTime = currentTime;
+  if (!activeRelay && !isRecognizing) {
+    recognizeFace();
   }
 
-  // --- Lógica de Ativação do Relé e Buzzer ---
-  // Esta parte do código é a sua lógica original e funciona com base
-  // no resultado da variável 'matchFace'.
   if (matchFace == true && activeRelay == false){
     activeRelay = true;
     digitalWrite (relay, HIGH);
