@@ -134,6 +134,7 @@ void loop() {
     delay(800);
     digitalWrite(BUZZER_PIN, LOW);
     prevMillis = millis();
+    matchFace = false;
   }
 
   if (activeRelay && millis() - prevMillis > interval) {

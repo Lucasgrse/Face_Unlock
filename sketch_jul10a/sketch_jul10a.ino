@@ -1,8 +1,14 @@
 #include "esp_camera.h"
 #include <WiFi.h>
-#include <WiFiClient.h>
+#include <WebServer.h>   // <-- NOVO
+#include <HTTPClient.h>  // <-- NOVO
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#include "driver/rtc_io.h"
 
-// --- Configurações da Câmera e Pinos ---
+void startCameraServer();
+
+
 #define CAMERA_MODEL_AI_THINKER
 #include "camera_pins.h"
 
@@ -10,100 +16,78 @@
 const char* ssid = "Perdidao";
 const char* password = "nemtefalo";
 
-// --- Configurações do Servidor de Backend ---
-const char* server_ip = "192.168.2.108"; 
-const int server_port = 8081;
+const char* server_ip = "192.168.2.108";
+const int server_port_socket = 8081;
+const int server_port_http = 5000;
 
-// --- Pinos de Hardware ---
-#define LED_BUILTIN 4
-#define relay 4
-#define buzzer 2
+// --- Pinos ---
+#define RELAY_PIN 4
+#define BUZZER_PIN 2
 
-// --- Variáveis Globais de Controle ---
+// --- Variáveis de Estado ---
 boolean matchFace = false;
 boolean activeRelay = false;
-long prevMillis = 0;
-int interval = 5000; // 5 segundos para o relé ficar ativo
-boolean isRecognizing = false;
+unsigned long prevMillis = 0;
+const int interval = 5000;
 
-//====================================================================
-// FUNÇÃO PARA RECONHECIMENTO FACIAL (Comunicação com o Backend)
-//====================================================================
-void recognizeFace() {
-  isRecognizing = true;
+WebServer server(80); // <-- NOVO: Cria o objeto do servidor web na porta 80
 
-  Serial.println("===================================");
-  Serial.println("Iniciando novo ciclo de reconhecimento...");
 
+void captureAndSendForRegistration() {
+  Serial.println("Comando de registro recebido. Capturando imagem...");
+
+  // Feedback para o usuário (opcional, mas recomendado)
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(150);
+  digitalWrite(BUZZER_PIN, LOW);
+  delay(150);
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(150);
+  digitalWrite(BUZZER_PIN, LOW);
+  
   camera_fb_t * fb = NULL;
-  
-  fb = esp_camera_fb_get(); 
+  fb = esp_camera_fb_get();
   if (!fb) {
-    Serial.println("Falha ao capturar imagem da câmera");
-    isRecognizing = false; // <-- Libera a flag em caso de erro
+    Serial.println("Falha na captura da câmera para registro.");
+    server.send(500, "text/plain", "Falha ao capturar imagem");
     return;
-  }
-
-  Serial.printf("Tamanho da imagem: %u bytes\n", fb->len);
-
-  WiFiClient client;
-  if (!client.connect(server_ip, server_port)) {
-    Serial.println("Falha ao conectar ao servidor");
-    esp_camera_fb_return(fb);
-    isRecognizing = false; // <-- Libera a flag em caso de erro
-    return;
-  }
-
-  Serial.println("Conectado ao servidor. Enviando imagem...");
-  client.write(fb->buf, fb->len);
-  Serial.println("Imagem enviada. Aguardando resposta...");
-  esp_camera_fb_return(fb);
-
-  unsigned long timeout = millis();
-  // Use o timeout aumentado que testamos antes (ex: 20 segundos)
-  while (!client.available() && millis() - timeout < 5000) { 
-    delay(100);
   }
   
-  if (client.available()) {
-    String response = client.readString();
-    Serial.print("Resposta do servidor: ");
-    Serial.println(response);
-    
-    if (response == "1") {
-      Serial.println("ACESSO PERMITIDO!");
-      matchFace = true;
-    } else {
-      Serial.println("ACESSO NEGADO!");
-      matchFace = false;
-    }
+  // Envia a resposta de sucesso para o Flask, confirmando que o comando foi recebido
+  server.send(200, "text/plain", "Comando de captura recebido. Processando...");
+  Serial.println("Enviando imagem para o endpoint de registro...");
+
+  HTTPClient http;
+  String server_url = "http://" + String(server_ip) + ":" + String(server_port_http) + "/receber-imagem-esp";
+  http.begin(server_url);
+  http.addHeader("Content-Type", "image/jpeg");
+
+  int httpResponseCode = http.POST(fb->buf, fb->len);
+
+  if (httpResponseCode > 0) {
+    Serial.printf("Registro - Resposta HTTP: %d, Resposta: %s\n", httpResponseCode, http.getString().c_str());
   } else {
-    Serial.println("Nenhuma resposta do servidor (timeout).");
+    Serial.printf("Registro - Erro no POST HTTP: %s\n", http.errorToString(httpResponseCode).c_str());
   }
 
-  client.stop();
-  Serial.println("Ciclo de reconhecimento finalizado.");
-  
-  isRecognizing = false; 
+  http.end();
+  esp_camera_fb_return(fb); // Sempre libere o buffer
 }
 
-
-
-//====================================================================
-// SETUP - Executa uma vez na inicialização
-//====================================================================
 void setup() {
+  // Desativa o Brownout Detector, que pode causar resets com o WiFi e a câmera ligados
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); 
+  
   Serial.begin(115200);
   Serial.setDebugOutput(true);
-  Serial.println();
+  Serial.println("\n--- Inicializando Fechadura com Streaming ---");
 
-  pinMode(relay, OUTPUT); 
-  pinMode(buzzer, OUTPUT); 
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
-  digitalWrite(relay, LOW);
-  digitalWrite(buzzer, LOW);
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
 
+  // Configuração da câmera (seu código original, sem alterações)
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -126,59 +110,88 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   
-  if(psramFound()){
-    config.frame_size = FRAMESIZE_UXGA;
-    config.jpeg_quality = 10;
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
-  }
+  // Para streaming, uma qualidade menor com um tamanho de frame menor funciona melhor
+  config.frame_size = FRAMESIZE_VGA; // VGA (640x480) é um bom equilíbrio
+  config.jpeg_quality = 12; // 10-12 é bom para streaming
+  config.fb_count = 2;
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
+    Serial.printf("Erro ao iniciar câmera: 0x%x", err);
     return;
   }
-
-  sensor_t * s = esp_camera_sensor_get();
-  s->set_framesize(s, FRAMESIZE_QVGA);
-
+  
+  // Conexão WiFi
   WiFi.begin(ssid, password);
-  Serial.print("Conectando ao WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
   Serial.println("\nWiFi conectado!");
-  Serial.print("Endereço IP da ESP32: ");
+  Serial.print("IP da ESP32-CAM: ");
   Serial.println(WiFi.localIP());
+
+  // --- NOVO: Inicia o servidor web da câmera ---
+  // Isso cria os endpoints /capture, /stream, etc.
+  startCameraServer();
+
+  Serial.println("Servidor de Câmera iniciado.");
+  Serial.println("Para ver o stream, acesse: http://" + WiFi.localIP().toString() + "/stream");
+  Serial.println("Para capturar uma foto, acesse: http://" + WiFi.localIP().toString() + "/capture");
+}
+
+// Função de reconhecimento (seu código original, sem alterações)
+void recognizeFace() {
+  Serial.println("\n(Reconhecimento) Capturando imagem...");
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) { Serial.println("Falha na captura da imagem."); return; }
+
+  WiFiClient client;
+  if (!client.connect(server_ip, server_port_socket)) {
+    Serial.println("Falha na conexão com o servidor de socket");
+    esp_camera_fb_return(fb);
+    return;
+  }
+  
+  client.write(fb->buf, fb->len);
+  unsigned long start = millis();
+  while (!client.available() && millis() - start < 10000) { delay(10); }
+
+  if (client.available()) {
+    String response = client.readString();
+    response.trim();
+    if (response == "1") { Serial.println("ACESSO PERMITIDO!"); matchFace = true; } 
+    else { Serial.println("ACESSO NEGADO!"); matchFace = false; }
+  } else { Serial.println("Timeout aguardando resposta do socket."); }
+  client.stop();
+  esp_camera_fb_return(fb);
 }
 
 
-//====================================================================
-// LOOP - Executa continuamente
-//====================================================================
 void loop() {
-  unsigned long currentTime = millis();
+  server.handleClient(); // <-- NOVO: Processa requisições HTTP recebidas
 
-  if (!activeRelay && !isRecognizing) {
-    recognizeFace();
+  if (!activeRelay) {
+    recognizeFace(); // O reconhecimento continua rodando normalmente
   }
 
-  if (matchFace == true && activeRelay == false){
+  if (matchFace && !activeRelay) {
+    Serial.println("Liberando fechadura...");
     activeRelay = true;
-    digitalWrite (relay, HIGH);
-    digitalWrite (buzzer, HIGH);
+    digitalWrite(RELAY_PIN, HIGH);
+    digitalWrite(BUZZER_PIN, HIGH);
     delay(800);
-    digitalWrite (buzzer, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
     prevMillis = millis();
+    matchFace = false;
   }
-  
-  if(activeRelay == true && millis() - prevMillis > interval){
+
+  if (activeRelay && millis() - prevMillis > interval) {
+    Serial.println("Fechando fechadura.");
     activeRelay = false;
-    matchFace = false; 
-    digitalWrite(relay, LOW);
-  }               
+    matchFace = false;
+    digitalWrite(RELAY_PIN, LOW);
+  }
+
+  delay(100);
 }

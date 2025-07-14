@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Controle da Fechadura Facial</title>
+    <style>
+        /* Seu CSS original aqui... eu adicionei uma regra para o container de vídeo */
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1rem; background-color: #f0f2f5; color: #333; }
+        .container { display: flex; flex-direction: column; align-items: center; padding: 2rem; background-color: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); width: 90%; max-width: 680px; }
+        h1 { margin-top: 0; color: #1c1e21; }
+        .video-container {
+            width: 100%;
+            max-width: 640px;
+            background-color: #000;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            position: relative;
+            /* Proporção 4:3 para VGA */
+            aspect-ratio: 4 / 3; 
+        }
+        .video-container video, .video-container img {
+            width: 100%;
+            height: 100%;
+            border-radius: 8px;
+        }
+        .controls { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 1rem; margin-top: 1rem; width: 100%; }
+        select, input[type="text"] { padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 1rem; flex-grow: 1; }
+        button { padding: 12px 20px; font-size: 1rem; font-weight: bold; color: white; background-color: #28a745; border: none; border-radius: 8px; cursor: pointer; transition: background-color 0.3s; }
+        button:hover { background-color: #218838; }
+        #result { margin-top: 1.5rem; font-size: 1.2rem; font-weight: bold; padding: 1rem; border-radius: 8px; min-height: 25px; text-align: center; width: 90%;}
+        .success { color: #155724; background-color: #d4edda; }
+        .error { color: #721c24; background-color: #f8d7da; }
+        .info { color: #0c5460; background-color: #d1ecf1; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Registro de Rosto</h1>
+        
+        <div class="controls">
+            <label for="sourceSelect">Fonte da Imagem:</label>
+            <select id="sourceSelect">
+                <option value="webcam">Webcam do PC</option>
+                <option value="espcam">Câmera da Fechadura (ESP-CAM)</option>
+            </select>
+        </div>
+
+        <div class="video-container">
+            <video id="video" autoplay playsinline></video>
+            <img id="stream" src="" style="display:none;">
+        </div>
+        
+        <div class="controls">
+            <input type="text" id="nameInput" placeholder="Digite o nome para registrar">
+            <button id="registerBtn">Registrar Rosto</button>
+        </div>
+
+        <div id="result"></div>
+    </div>
+
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <script>
+        const sourceSelect = document.getElementById('sourceSelect');
+        const videoElement = document.getElementById('video');
+        const streamElement = document.getElementById('stream');
+        const registerBtn = document.getElementById('registerBtn');
+        const nameInput = document.getElementById('nameInput');
+        const resultDiv = document.getElementById('result');
+        const canvas = document.getElementById('canvas');
+
+        const esp_cam_ip = "{{ esp_cam_ip }}";
+        const esp_cam_stream_port = "{{ esp_cam_stream_port }}";
+        const streamUrl = `http://${esp_cam_ip}:${esp_cam_stream_port}/stream`;
+        
+        let localMediaStream;
+
+        async function updateVideoSource() {
+            const selectedSource = sourceSelect.value;
+            
+            if (localMediaStream) {
+                localMediaStream.getTracks().forEach(track => track.stop());
+            }
+            streamElement.src = 'about:blank';
+            if (selectedSource === 'webcam') {
+                streamElement.style.display = 'none';
+                videoElement.style.display = 'block';
+                try {
+                    localMediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                    videoElement.srcObject = localMediaStream;
+                } catch (err) {
+                    resultDiv.textContent = "Erro ao acessar webcam.";
+                    resultDiv.className = 'error';
+                }
+            } else {
+                videoElement.style.display = 'none';
+                streamElement.style.display = 'block';
+                streamElement.src = streamUrl; 
+            }
+        }
+
+        registerBtn.addEventListener('click', async () => {
+            const name = nameInput.value.trim();
+            if (!name) {
+                resultDiv.textContent = 'Por favor, digite um nome.';
+                resultDiv.className = 'error';
+                return;
+            }
+            
+            resultDiv.textContent = `Registrando ${name}...`;
+            resultDiv.className = 'info';
+            registerBtn.disabled = true;
+
+            const selectedSource = sourceSelect.value;
+            let response;
+
+            try {
+                if (selectedSource === 'espcam') {
+                    response = await fetch('/iniciar-registro', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: name }),
+                    });
+
+                } else {
+                    const context = canvas.getContext('2d');
+                    canvas.width = videoElement.videoWidth;
+                    canvas.height = videoElement.videoHeight;
+                    context.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                    
+                    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg'));
+                    const formData = new FormData();
+                    formData.append('image', blob, 'webcam.jpg');
+                    formData.append('name', name);
+                    
+                    response = await fetch('/register', { method: 'POST', body: formData });
+                }
+
+                const data = await response.json();
+                if (response.ok) {
+                    resultDiv.textContent = data.message;
+                    resultDiv.className = 'success';
+                    nameInput.value = '';
+                } else {
+                    throw new Error(data.message);
+                }
+
+            } catch (error) {
+                console.error("Erro no registro:", error);
+                resultDiv.textContent = `Erro: ${error.message}`;
+                resultDiv.className = 'error';
+            } finally {
+                registerBtn.disabled = false;
+            }
+        });
+
+        sourceSelect.addEventListener('change', updateVideoSource);
+        window.addEventListener('load', updateVideoSource);
+
+    </script>
+</body>
+</html>
