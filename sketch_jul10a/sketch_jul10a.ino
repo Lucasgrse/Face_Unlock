@@ -13,10 +13,10 @@ void startCameraServer();
 #include "camera_pins.h"
 
 // --- Configurações de Rede ---
-const char* ssid = "Perdidao";
-const char* password = "nemtefalo";
+const char* ssid = "iPhone";
+const char* password = "12345678";
 
-const char* server_ip = "192.168.2.108";
+const char* server_ip = "192.168.15.10";
 const int server_port_socket = 8081;
 const int server_port_http = 5000;
 

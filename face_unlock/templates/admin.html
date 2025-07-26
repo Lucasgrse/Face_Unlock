@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Painel de Administração</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 2rem;
+      background-color: #f9f9f9;
+      color: #333;
+    }
+    h1, h2 { text-align: center; }
+    .section { margin-bottom: 3rem; }
+    .card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #fff;
+      padding: 1rem;
+      margin: 1rem auto;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      width: 300px;
+    }
+    img { width: 100%; border-radius: 6px; }
+    input[type="text"] {
+      margin-top: 0.5rem;
+      padding: 0.5rem;
+      width: 90%;
+    }
+    button {
+      margin-top: 0.5rem;
+      padding: 0.6rem 1rem;
+      border: none;
+      border-radius: 5px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .approve { background-color: #28a745; color: white; }
+    .reject { background-color: #dc3545; color: white; }
+    .delete { background-color: #ffc107; color: black; }
+    .unlock { background-color: #007bff; color: white; }
+    .grid {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 1rem;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Painel de Administração</h1>
+
+  <div class="section">
+    <h2>🔓 Destrancar Manualmente</h2>
+    <div style="text-align: center;">
+      <button class="unlock" onclick="destrancar()">Destrancar Fechadura</button>
+      <p id="unlockStatus"></p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>📸 Aguardando Aprovação</h2>
+    <div id="pendentesContainer" class="grid"></div>
+  </div>
+
+  <div class="section">
+    <h2>👥 Pessoas Cadastradas</h2>
+    <div id="pessoasContainer" class="grid"></div>
+  </div>
+
+  <script>
+    async function carregarPendentes() {
+      const container = document.getElementById("pendentesContainer");
+      container.innerHTML = "";
+      const res = await fetch("/pendentes");
+      const data = await res.json();
+
+      for (const path of data.pendentes) {
+        const uid = path.split("/").pop().replace(".jpg", "");
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const img = document.createElement("img");
+        img.src = path;
+        const input = document.createElement("input");
+        input.placeholder = "Digite o nome";
+        const aprovarBtn = document.createElement("button");
+        aprovarBtn.textContent = "Aprovar";
+        aprovarBtn.className = "approve";
+        aprovarBtn.onclick = () => aprovar(uid, input.value.trim());
+
+        const rejeitarBtn = document.createElement("button");
+        rejeitarBtn.textContent = "Rejeitar";
+        rejeitarBtn.className = "reject";
+        rejeitarBtn.onclick = () => rejeitar(uid);
+
+        card.appendChild(img);
+        card.appendChild(input);
+        card.appendChild(aprovarBtn);
+        card.appendChild(rejeitarBtn);
+        container.appendChild(card);
+      }
+    }
+
+    async function aprovar(id, nome) {
+      if (!nome) return alert("Nome obrigatório.");
+      await fetch("/aprovar", {
+        method: "POST",
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id, name: nome })
+      });
+      carregarPendentes();
+      carregarPessoas();
+    }
+
+    async function rejeitar(id) {
+      await fetch("/rejeitar", {
+        method: "POST",
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id })
+      });
+      carregarPendentes();
+    }
+
+    async function carregarPessoas() {
+      const container = document.getElementById("pessoasContainer");
+      container.innerHTML = "";
+      const res = await fetch("/pessoas");
+      const data = await res.json();
+
+      for (const nome of data.cadastrados) {
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const img = document.createElement("img");
+        img.src = `/known_faces/${nome}.jpg`;
+        const label = document.createElement("p");
+        label.textContent = nome;
+        const btn = document.createElement("button");
+        btn.textContent = "Remover";
+        btn.className = "delete";
+        btn.onclick = () => removerPessoa(nome);
+
+        card.appendChild(img);
+        card.appendChild(label);
+        card.appendChild(btn);
+        container.appendChild(card);
+      }
+    }
+
+    async function removerPessoa(nome) {
+      await fetch(`/pessoas/${nome}`, { method: "DELETE" });
+      carregarPessoas();
+    }
+
+    async function destrancar() {
+      const status = document.getElementById("unlockStatus");
+      status.textContent = "Enviando comando...";
+      try {
+        const res = await fetch("/destrancar", { method: "POST" });
+        const data = await res.json();
+        status.textContent = data.message;
+      } catch {
+        status.textContent = "Erro ao tentar destrancar.";
+      }
+    }
+
+    window.onload = () => {
+      carregarPendentes();
+      carregarPessoas();
+    };
+  </script>
+</body>
+</html>

@@ -196,10 +196,91 @@ def webcam_test():
                            esp_cam_stream_port=ESP32_CAM_STREAM_PORT,
                            esp_cam_control_port=ESP32_CAM_CONTROL_PORT)
 
+@app.route('/solicitar-aprovacao', methods=['POST'])
+def solicitar_aprovacao():
+    if 'image' not in request.files:
+        return jsonify({'status': 'error', 'message': 'Imagem não enviada'}), 400
+
+    image = request.files['image']
+    uid = str(int(time.time()))  # nome baseado em timestamp
+    filename = f"{uid}.jpg"
+    filepath = os.path.join("pendentes", filename)
+    os.makedirs("pendentes", exist_ok=True)
+    image.save(filepath)
+
+    return jsonify({'status': 'pending', 'id': uid, 'message': 'Imagem enviada para aprovação'})
+
+@app.route('/pendentes', methods=['GET'])
+def listar_pendentes():
+    os.makedirs("pendentes", exist_ok=True)
+    arquivos = os.listdir("pendentes")
+    imagens = [f"/pendentes/{arq}" for arq in arquivos if arq.endswith(".jpg")]
+    return jsonify({'pendentes': imagens})
+
+@app.route('/aprovar', methods=['POST'])
+def aprovar():
+    data = request.get_json()
+    uid = data.get('id')
+    nome = data.get('name')
+
+    if not uid or not nome:
+        return jsonify({'status': 'error', 'message': 'ID e nome são obrigatórios'}), 400
+
+    src_path = os.path.join("pendentes", f"{uid}.jpg")
+    dst_path = os.path.join(KNOWN_FACES_DIR, f"{nome}.jpg")
+
+    if not os.path.exists(src_path):
+        return jsonify({'status': 'error', 'message': 'Imagem não encontrada'}), 404
+
+    os.rename(src_path, dst_path)
+    return jsonify({'status': 'success', 'message': f'{nome} aprovado e registrado'})
+
+@app.route('/rejeitar', methods=['POST'])
+def rejeitar():
+    data = request.get_json()
+    uid = data.get('id')
+
+    if not uid:
+        return jsonify({'status': 'error', 'message': 'ID é obrigatório'}), 400
+
+    filepath = os.path.join("pendentes", f"{uid}.jpg")
+    if os.path.exists(filepath):
+        os.remove(filepath)
+        return jsonify({'status': 'success', 'message': 'Rejeitado e removido'})
+    return jsonify({'status': 'error', 'message': 'Arquivo não encontrado'}), 404
+
+@app.route('/pessoas', methods=['GET'])
+def listar_pessoas():
+    arquivos = os.listdir(KNOWN_FACES_DIR)
+    rostos = [arq for arq in arquivos if arq.endswith('.jpg')]
+    nomes = [os.path.splitext(nome)[0] for nome in rostos]
+    return jsonify({'cadastrados': nomes})
+
+@app.route('/pessoas/<nome>', methods=['DELETE'])
+def remover_pessoa(nome):
+    filepath = os.path.join(KNOWN_FACES_DIR, f"{nome}.jpg")
+    if os.path.exists(filepath):
+        os.remove(filepath)
+        return jsonify({'status': 'success', 'message': f'{nome} removido com sucesso'})
+    return jsonify({'status': 'error', 'message': f'{nome} não encontrado'}), 404
+
+@app.route('/destrancar', methods=['POST'])
+def destrancar():
+    try:
+        url = f"http://{ESP32_CAM_IP}:{ESP32_CAM_CONTROL_PORT}/destrancar"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        return jsonify({'status': 'success', 'message': 'Fechadura destrancada'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Erro ao destrancar: {str(e)}'}), 500
+
 @app.route('/')
 def index():
     return "Servidor de Reconhecimento Facial no ar. Acesse /webcam_test para a interface."
 
+@app.route('/admin')
+def painel_admin():
+    return render_template('admin.html')
 
 if __name__ == '__main__':
     print("Inicializando o servidor...")
